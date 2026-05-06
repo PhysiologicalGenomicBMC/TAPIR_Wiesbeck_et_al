@@ -11,4 +11,5 @@ Ribosomal RNA (rRNA) transcription rates vary during development, and their dysr
 ### Plasmid information
 
 To order the plasmid, see Addgene (https://www.addgene.org/Stefan_Stricker/)
-Plasmid map and sequences are available in the folder ./plasmids
+
+Plasmid map and sequences are available in the [plasmid folder](./plasmids).
