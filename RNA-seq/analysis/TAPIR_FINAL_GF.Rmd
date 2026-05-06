@@ -1,0 +1,590 @@
+---
+title: "TAPIR_FINAL_GF_ONLY"
+author: "Luisa Egert"
+date: "2026-01-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# set pathways
+```{r}
+MainDIR_TP3="/Users/ra98rux/Desktop/RNA_Seq_MW/TAPIR_Anna_CountMTX"
+
+WORKDIR_GF=file.path(MainDIR_TP3,"GF_ONLY_Analysis")
+#dir.create(WORKDIR_GF)
+ResultsDIR_TP3=file.path(WORKDIR_TP3, "Results")
+#dir.create(ResultsDIR_TP3)
+ResultsDIR_GF=file.path(WORKDIR_GF, "Results")
+#dir.create(ResultsDIR_GF)
+FigDIR_GF=file.path(WORKDIR_GF,"Plots")
+#dir.create(FigDIR_GF)
+
+CountsDIR_TP3=file.path(MainDIR_TP3,"CountFiles")
+
+GeneScoreDIR=file.path(WORKDIR_TP3,"GeneScores")
+
+```
+
+# install libraries
+```{r}
+#BiocManager::install("rtools")
+#install.packages("xfun")
+#BiocManager::install("edgeR")
+#BiocManager::install("biomaRt")
+#BiocManager::install("statmod")
+#BiocManager::install("ggrepel")
+#BiocManager::install("umap")
+#BiocManager::install("EnsDb.Hsapiens.v86")
+#BiocManager::install("sva")
+#BiocManager::install("rstatix")
+#BiocManager::install("DESeq2")
+#BiocManager::install("msigdbr")
+#BiocManager::install("fgsea")
+#BiocManager::install("tidyverse")
+#BiocManager::install("tidyr")
+#BiocManager::install("rtracklayer")
+#BiocManager::install("gridExtra")
+#BiocManager::install("grid")
+# install biomart and genomicfeatures from bioconductor
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+   # install.packages("BiocManager")
+
+#BiocManager::install("biomaRt")
+#BiocManager::install("GenomicFeatures")
+
+library(edgeR)
+library (ggplot2)
+library(plyr)
+library(biomaRt)
+library(ggrepel)
+library(dplyr)
+library(pheatmap)
+library(gplots)
+library(cowplot)
+library(sva)
+library(rstatix)
+library(DESeq2)
+library(fgsea)
+library(tidyverse)
+library(msigdbr)
+library(tidyr)
+library(rtracklayer)
+library(gridExtra)
+library(grid)
+
+library(biomaRt)
+library(GenomicFeatures)
+
+
+```
+
+# make ens_mgi list with rtracklayer (with gtf file from anna d)
+```{r}
+
+# Import GTF file
+gtf <- import(file.path(MainDIR_TP3, "gencode.vM35.annotation.gtf"))
+
+# Extract unique gene info
+genes <- unique(mcols(gtf[gtf$type == "gene", c("gene_id", "gene_name")]))
+head(genes)
+
+rownames(genes)<-genes$gene_id
+#add ensvowers
+genes$enswovers<-gsub("\\..*","",row.names(genes))
+rownames(genes)<-genes$enswovers
+
+# remove columns with ens with verisons
+genes.1<-genes[,-3]
+
+```
+
+# read in Meta File
+```{r}
+Meta_TP3_wo3_GF<-read.table(file.path(ResultsDIR_TP3, "Meta_TP3_wo3_GF.txt"), sep="\t")
+rownames(Meta_TP3_wo3_GF)<-Meta_TP3_wo3_GF$Sample_ID
+```
+
+
+# read in count files and make count matrix - GF 
+```{r}
+# create count table
+countl_GF<-list.files(path = CountsDIR_TP3,pattern = ".txt", ignore.case = FALSE) #reading in the file names as a list
+
+#a sorting vector according to RNAseq ID
+sortvec_GF<-sapply(as.character(Meta_TP3_wo3_GF$Sample_ID), function(x) grep(x,countl_GF))
+sortvec_GF
+length(sortvec_GF)
+
+# creat count df
+counts_GF<-as.data.frame(matrix(),row.names = NULL)
+for (i in sortvec_GF) {
+rpgl_GF.t<-read.delim(file.path(CountsDIR_TP3,countl_GF[i]),sep = "\t",header = F, skip =  ,check.names = TRUE,row.names = NULL)
+counts_GF<-cbind(counts_GF,rpgl_GF.t[1:nrow(rpgl_GF.t),3])
+}
+
+# remove empty column
+counts_GF<-counts_GF[,(-1)]
+
+#add ens numbers as row names
+ens_MW.GF<-read.delim(file.path(CountsDIR_TP3,countl_GF[3]),sep = "\t", header = F, skip = ,check.names = TRUE,row.names = NULL)[1:nrow(rpgl_GF.t),1]
+row.names(counts_GF)<-ens_MW.GF
+
+#add ensvowers
+counts_GF$enswovers<-gsub("\\..*","",row.names(counts_GF))
+#check for duplicates
+nrow(counts_GF[duplicated(counts_GF$enswovers,fromLast=TRUE),]) #0 duplicated ENS
+
+#remove dups
+rownames(counts_GF)<-counts_GF$enswovers 
+
+colnames(counts_GF)<-Meta_TP3_wo3_GF$Sample_ID
+
+counts_GF<-counts_GF[,-13]
+
+#write.table(counts_GF,file=file.path(ResultsDIR_GF, "counts_GF.txt"),sep="\t")
+
+counts_GF<-read.table(file = file.path(ResultsDIR_GF, "counts_GF.txt"), header = T,sep="\t")
+
+```
+
+# selec for genes in count df
+```{r}
+# select for genes in count df
+genes2<-subset(genes.1, rownames(genes.1)%in%rownames(counts_GF))
+
+#write.table(genes2, file=file.path(ResultsDIR_TP3, "genes2.txt"), sep="\t")
+
+genes2<-read.table(file = file.path(ResultsDIR_TP3, "genes2.txt"), header = T,sep="\t")
+
+```
+
+
+## DEG with DESeq2 on raw counts 
+```{r}
+## design = ~ TAPIR + DS
+dds.wo3_GF<-DESeqDataSetFromMatrix(
+  countData = counts_GF, 
+  colData = Meta_TP3_wo3_GF, 
+  design = ~ DS + treadCond) # in deseq2: covariats first (batch) treatment last
+
+dds.wo3_GF<-DESeq(dds.wo3_GF)
+dds.wo3_GF.counts<-counts(dds.wo3_GF, normalized=TRUE)
+
+# To get the main comparison of control vs gRNA, extract results
+res_gRNAvsCtr.GF.wo3_ONLY<-results(dds.wo3_GF, contrast = c("treadCond", "GF_gRNA", "GF_CTR"))
+
+## remove samples with N/A in padj column
+res_gRNAvsCtr.GF.wo3_ONLY_woNA<-res_gRNAvsCtr.GF.wo3_ONLY[!is.na(res_gRNAvsCtr.GF.wo3_ONLY$padj), ]
+
+## merge df wo NA filter with mgi
+res_gRNAvsCtr.GF.wo3_ONLY_woNA<-as.data.frame(res_gRNAvsCtr.GF.wo3_ONLY_woNA)
+res_gRNAvsCtr.GF.wo3_ONLY_woNA.mgi<-merge(res_gRNAvsCtr.GF.wo3_ONLY_woNA, genes2, by=0)
+#write.table(res_gRNAvsCtr.GF.wo3_ONLY_woNA.mgi,file=file.path(ResultsDIR_GF, "res_gRNAvsCtr.GF.wo3_ONLY_woNA.mgi.txt"),sep="\t")
+
+
+# remove genes with a base mean expression < 1.5
+## check MA plots
+plotMA(dds.wo3_GF, ylim=c(-15, 15), alpha = 0.1)
+
+## filter for base mean
+res_gRNAvsCtr.GF.wo3_ONLY_woNA_BM<-res_gRNAvsCtr.GF.wo3_ONLY_woNA[(res_gRNAvsCtr.GF.wo3_ONLY_woNA$baseMean >1.5),]
+
+#write.table(res_gRNAvsCtr.GF.wo3_ONLY_woNA_BM,file=file.path(ResultsDIR_GF, "res_gRNAvsCtr.GF.wo3_ONLY__woNA_BM.txt"),sep="\t")
+
+
+# order by different conditions
+res_gRNAvsCtr.GF.ONLY_wo3_woNA.padj<-res_gRNAvsCtr.GF.wo3_ONLY_woNA[order(res_gRNAvsCtr.GF.wo3_ONLY_woNA$padj),] 
+res_gRNAvsCtr.GF.ONLY_wo3_woNA.pval<-res_gRNAvsCtr.GF.wo3_ONLY_woNA[order(res_gRNAvsCtr.GF.wo3_ONLY_woNA$pvalue),] 
+res_gRNAvsCtr.GF.ONLY_wo3_woNA.FLC<-res_gRNAvsCtr.GF.wo3_ONLY_woNA[order(res_gRNAvsCtr.GF.wo3_ONLY_woNA$log2FoldChange),] 
+
+# make list with interesting genes
+summary.df_GF<-data.frame()
+summary.df_GF["GF_gRNA_vs_GF_CTR", "Up_Padj"]<-nrow(subset(as.data.frame(res_gRNAvsCtr.GF.ONLY_wo3_woNA.padj), padj<0.05 & log2FoldChange > 0.585))
+summary.df_GF["GF_gRNA_vs_GF_CTR", "DN_Padj"]<-nrow(subset(as.data.frame(res_gRNAvsCtr.GF.ONLY_wo3_woNA.padj), padj<0.05 & log2FoldChange < (-0.585)))
+summary.df_GF["GF_gRNA_vs_GF_CTR", "Up_PVAL"]<-nrow(subset(as.data.frame(res_gRNAvsCtr.GF.ONLY_wo3_woNA.padj), pvalue<0.05 & log2FoldChange > 0.585))
+summary.df_GF["GF_gRNA_vs_GF_CTR", "DN_PVAL"]<-nrow(subset(as.data.frame(res_gRNAvsCtr.GF.ONLY_wo3_woNA.padj), pvalue<0.05 & log2FoldChange < (-0.585)))
+
+summary.df_GF
+#write.table(summary.df_GF,file=file.path(ResultsDIR_GF, "summary.df_GF.woNA.txt"),sep="\t")
+
+
+# Use basemean filtered res tables and order
+res_gRNAvsCtr.GF.wo3_ONLY_woNA_BM.padj<-res_gRNAvsCtr.GF.wo3_ONLY_woNA_BM[order(res_gRNAvsCtr.GF.wo3_ONLY_woNA_BM$padj),] 
+res_gRNAvsCtr.GF.wo3_ONLY_woNA_BM.padj<-as.data.frame(res_gRNAvsCtr.GF.wo3_ONLY_woNA_BM.padj)
+
+## merge df with BM filter with mgi
+res_gRNAvsCtr.GF.wo3_ONLY_woNA_BM.padj.mgi<-merge(res_gRNAvsCtr.GF.wo3_ONLY_woNA_BM.padj, genes2, by=0)
+
+
+```
+
+## CBS on raw dds.counts_TP3.GF - batch correction for PCA
+```{r}
+batchvec_merge_GF<-Meta_TP3_wo3_GF$DS
+raw_counts_GF <- counts(dds.wo3_GF, normalized = FALSE) # extract raw counts from DSEQ2 matrix
+CBS_counts_TP3.wo3_GF<-ComBat_seq(as.matrix(raw_counts_GF), batch = batchvec_merge_GF) # batch correction
+
+#write.table(CBS_counts_TP3.wo3_GF,file=file.path(ResultsDIR_GF, "CBS_counts_TP3.wo3_GF.txt"),sep="\t")
+
+```
+
+### dds.counts normalization on CBS treated raw counts - for PCA
+```{r}
+## design = ~ TAPIR + DS
+dds.wo3.CBS_GF<-DESeqDataSetFromMatrix(
+  countData = CBS_counts_TP3.wo3_GF, 
+  colData = Meta_TP3_wo3_GF, 
+  design = ~ DS + treadCond)
+
+# isolate normalized counts
+dds.wo3.CBS_GF<-DESeq(dds.wo3.CBS_GF)
+dds.wo3.CBS_GF.counts<-counts(dds.wo3.CBS_GF, normalized=TRUE)
+
+# write.table(dds.wo3.CBS_GF.counts,file=file.path(ResultsDIR_GF, "dds.wo3.CBS_GF.counts.txt"),sep="\t")
+
+```
+
+### PCA plot with outline
+```{r}
+
+group_TP3_wo.3.GF<-factor(Meta_TP3_wo3_GF$TAPIR, levels = c("gRNA", "control"))
+outline_GF= c( "gRNA" = "darkred", "control" = "darkblue")
+
+colourlables6<- c("gRNA", "control")
+scale_colour6 = c( "gRNA" = "#FF6666", "control" = "#00CCFF")
+
+
+pca_func.wo3.GF.s<-function(data, groupv = group_TP3_wo.3.GF, labels = "", celltype = group_TP3_wo.3.GF, colourlables = colourlables6, scales_col = scale_colour6, outline_col = outline_GF){
+  prin_comp.d <- prcomp(data, scale. = FALSE)
+  std_dev.d <- prin_comp.d$sdev 
+  pr_var.d <- std_dev.d^2
+  prop_varex.d <- round(100*pr_var.d/sum(pr_var.d), digits=1)
+  embedding <- as.data.frame(prin_comp.d$rotation)
+  embedding$Class <- as.factor(groupv)
+  embedding$celltype <- as.factor(celltype)
+  p1 <- ggplot(data=embedding) +
+    aes(x=PC1, y=PC2)+
+      geom_point( size = rel(16), stroke = 2, aes( fill = Class, colour = Class, shape = celltype)) +
+      scale_colour_manual( values = outline_GF, name = "TAPIR GF", labels = colourlables) +
+      scale_fill_manual( values = scales_col, name = "TAPIR GF",labels = colourlables) +
+      scale_shape_manual( values = c("gRNA" = 22, "control" = 21),name = "TAPIR") +
+      geom_text_repel(aes(label=labels), col="black", segment.colour="black", segment.size=0.4, min.segment.length=0.1, point.padding=.1,segment.alpha=0.7, alpha=1, size       = 4) +
+      ggtitle("PCA: TAPIR 2")  +
+      xlab(paste("PC2: ",prop_varex.d[2],"% of variance")) + ylab(paste("PC1: ",prop_varex.d[1],"% of variance")) +
+theme_light() +
+    theme(plot.tag=element_text(size = 12*2.0, face = "bold"),
+          plot.title = element_text(size = rel(1.5), face = "plain", hjust = 0.5), 
+          legend.text = element_text(colour="black", size = rel(1.2), face = "plain"),
+          legend.title = element_text(colour="black", size = rel(1.2), face = "bold"),
+          legend.box.just = "top",
+          axis.text = element_text(colour = "black", size = rel(1), face = "plain"),
+          axis.title = element_text(colour = "black",size = rel(1.5),face = "plain"),
+          panel.grid = element_blank(),
+          panel.border = element_rect(colour = "black",size=2),
+          axis.ticks = element_line(colour="black"),
+          aspect.ratio = 1.0, 
+
+          legend.position = "right",legend.background = element_rect(fill = "transparent"),legend.box.background = element_rect(colour = "darkgrey")
+        )
+  plot(p1)
+}
+
+```
+
+#### PCA top 500 diff genes for GF - FC - highest to lowest
+```{r}
+## GF
+res_gRNAvsCtr.GF.wo3_ONLY_woNA_BM.o.FC.UP<-res_gRNAvsCtr.GF.wo3_ONLY_woNA_BM[order(res_gRNAvsCtr.GF.wo3_ONLY_woNA_BM$log2FoldChange, decreasing = TRUE),]
+res_gRNAvsCtr.GF.wo3_ONLY_woNA_BM.o.FC.UP_top500<-res_gRNAvsCtr.GF.wo3_ONLY_woNA_BM.o.FC.UP[1:500,]
+
+### subset counts with top500
+top500FC.UP_CBS_GF_ONLY_wo3<-subset(dds.wo3.CBS_GF.counts, rownames(dds.wo3.CBS_GF.counts)%in%rownames(res_gRNAvsCtr.GF.wo3_ONLY_woNA_BM.o.FC.UP_top500))
+
+## run PCA
+pca_func.wo3.GF.s(top500FC.UP_CBS_GF_ONLY_wo3)
+
+pdf(file=file.path(FigDIR_GF, "PCA_top500FC.UP_CBS_wo3.pointsize_outline_GF_only.pdf"), height = 10, width = 10)
+pca_func.wo3.GF.s(top500FC.UP_CBS_GF_ONLY_wo3)
+dev.off()
+
+```
+
+## 3 GSEA - with DESQ2 Data with human sig
+```{r}
+
+MsicList<- vector(mode = "list", length = 0)
+signatures<-c("H","C2","C3","C5","C6","C7","C8")
+for (sig in signatures){
+  MsicList[[sig]]<-msigdbr(species = "Mus musculus", category = sig)
+  #Transform into list format requires for indexing
+  MsicList[[sig]]<- split(x = MsicList[[sig]]$gene_symbol, f = MsicList[[sig]]$gs_name)
+}
+
+
+#transform results into ranks format
+## GF
+res_gRNAvsCtr.GF.wo3_ONLY_woNA.mgi <- res_gRNAvsCtr.GF.wo3_ONLY_woNA.mgi %>%
+  dplyr::select(gene_name, stat) %>%
+  na.omit() %>% distinct() %>% group_by(gene_name) %>%
+  summarize(stat=mean(stat))
+
+ranksGF.only<-deframe(res_gRNAvsCtr.GF.wo3_ONLY_woNA.mgi)
+
+# for C2 C5 and H combined 
+set.seed(8501)
+fgsea_C2C5H_GF.only <- fgsea(pathways = c(MsicList[["C2"]],MsicList[["C5"]],MsicList[["H"]]),stats = ranksGF.only,eps = 0,minSize = 6, maxSize = 200,)
+fgsea_C2C5H_GF.only.o <- fgsea_C2C5H_GF.only[order(fgsea_C2C5H_GF.only$padj),]
+
+## NES means normalized enrichment score (e.g. GF vs control, if NES more the 1 then it's enriched in GF)
+fgsea_C2C5H_GF.only.o.UP <- subset(fgsea_C2C5H_GF.only, padj<0.01 & NES > 1)
+fgsea_C2C5H_GF.only.o.DN <- subset(fgsea_C2C5H_GF.only, padj<0.01 & NES < (-1))
+
+# vector with all signatures of list
+combpathways <- c(MsicList[["C2"]],MsicList[["C5"]],MsicList[["H"]])
+
+# significant Cell cycle signatures 
+# for data frame created above and that have a signficant padj
+Cellcyclepaths_Sig_GF.only <- combpathways[subset(fgsea_C2C5H_GF.only.o[grep("CELL_CYCLE",fgsea_C2C5H_GF.only.o$pathway),], padj<0.05)$pathway] # df that contains only sig cell cycle pathways
+cellcyle_GFGSEAplot.only <- plotGseaTable(Cellcyclepaths_Sig_GF.only, ranksGF.only,
+              fgsea_C2C5H_GF.only.o, gseaParam = 0.5)                  
+#ggsave(cellcyle_GFGSEAplot.only,file=file.path(FigDIR_GF,"CellCycle_GFGSEAplot_maxsize200_Clean_ONLY.pdf"),height=10,width=15)
+
+
+# significant ribosome signature
+RIBOSOMEpaths_Sig_GF.only <- combpathways[subset(fgsea_C2C5H_GF.only.o[grep("RIBOSOME",fgsea_C2C5H_GF.only.o$pathway),], padj<0.05)$pathway]
+RIBOSOME_GFGSEAplot.only <- plotGseaTable(RIBOSOMEpaths_Sig_GF.only, ranksGF.only,
+              fgsea_C2C5H_GF.only.o, gseaParam = 0.5)
+#ggsave(RIBOSOME_GFGSEAplot.only,file=file.path(FigDIR_GF,"RIBOSOME_GFGSEAplot_maxsize200_Clean.ONLLY.pdf"),height=10,width=15)
+
+RIBOpaths_Sig_GF.only <- combpathways[subset(fgsea_C2C5H_GF.only.o[grep("RIBO",fgsea_C2C5H_GF.only.o$pathway),], padj<0.05)$pathway]
+RIBO_GFGSEAplot.only <- plotGseaTable(RIBOpaths_Sig_GF.only, ranksGF.only,
+              fgsea_C2C5H_GF.only.o, gseaParam = 0.5)
+#ggsave(RIBO_GFGSEAplot.only,file=file.path(FigDIR_GF,"RIBO_GFGSEAplot_maxsize200.ONLY.pdf"),height=10,width=15)
+
+# Apoptosis
+APOP_NotSig_GF.only <- combpathways[subset(fgsea_C2C5H_GF.only.o[grep("APOP",fgsea_C2C5H_GF.only.o$pathway),], padj<3)$pathway] 
+APOP_NotSig_GF_GSEAplot.only <- plotGseaTable(APOP_NotSig_GF.only, ranksGF.only,
+              fgsea_C2C5H_GF.only.o, gseaParam = 0.5)
+#ggsave(APOP_NotSig_GF_GSEAplot.only,file=file.path(FigDIR_GF,"APOP_GFGSEAplot_maxsize200_notSig.ONLY.pdf"),height=10,width=15) 
+
+## UPR
+UNFOLDED_NOTSig_GF.only <- combpathways[subset(fgsea_C2C5H_GF.only.o[grep("UNFOLDED",fgsea_C2C5H_GF.only.o$pathway),], padj<3)$pathway] ## no results
+UNFOLDED_NOTSig_GF_GSEAplot.only <- plotGseaTable(UNFOLDED_NOTSig_GF.only, ranksGF.only,
+              fgsea_C2C5H_GF.only.o, gseaParam = 0.5)
+#ggsave(UNFOLDED_NOTSig_GF_GSEAplot.only,file=file.path(FigDIR_GF,"UNFOLDED_NOTSig_GF_GSEAplot_maxsize200_Padj0.05.ONLY.pdf"),height=10,width=15) 
+
+# Astro
+ASTRO_Sig_GF.only <- combpathways[subset(fgsea_C2C5H_GF.only.o[grep("ASTRO",fgsea_C2C5H_GF.only.o$pathway),], padj<0.05)$pathway] 
+ASTRO_Sig_GF_GSEAplot.only <- plotGseaTable(ASTRO_Sig_GF.only, ranksGF.only,
+              fgsea_C2C5H_GF.only.o, gseaParam = 0.5)
+#ggsave(ASTRO_Sig_GF_GSEAplot.only,file=file.path(FigDIR_GF,"ASTRO_Sig_GF_GSEAplot_maxsize200_Padj0.05_Clean_test8501.ONLY.pdf"),height=10,width=15)
+
+# rRNA
+rRNA_Sig_GF.only <- combpathways[subset(fgsea_C2C5H_GF.only.o[grep("RRNA",fgsea_C2C5H_GF.only.o$pathway),], padj<0.05)$pathway] 
+rRNA_Sig_GF_GSEAplot.only <- plotGseaTable(rRNA_Sig_GF.only, ranksGF.only,
+              fgsea_C2C5H_GF.only.o, gseaParam = 0.5)
+#ggsave(rRNA_Sig_GF_GSEAplot.only,file=file.path(FigDIR_GF,"rRNA_Sig_GF_GSEAplot_maxsize200_Padj0.05_Clean.ONLY.pdf"),height=10,width=15)
+
+
+```
+
+## GSEA introduce jitter
+```{r}
+#ranksGF<- order from highest to lowest
+ranksGF.only.s <- sort(ranksGF.only, decreasing = TRUE)
+
+ranksGF.jit <- ranksGF.only.s + runif(length(ranksGF.only.s), min = 1e-10, max = 1e-8)
+```
+
+### GSEA to plot multiple plots with correct space, ticks in colour and x axis 
+```{r}
+plotGseaTable_colored_mirror_with_stats <- function(pathways, stats, fgseaRes,
+                                                    col_pos = "#F8766D",
+                                                    col_neg = "#00BFC4",
+                                                    tick_width = 0.3,
+                                                    panel_height = 6,
+                                                    spacer_height = 0.3) {
+
+  # Keep only pathways present in the fgsea results
+  fgseaRes <- fgseaRes[fgseaRes$pathway %in% names(pathways), ]
+  fgseaRes <- fgseaRes[order(fgseaRes$NES, decreasing = TRUE), ]
+
+  plots <- lapply(seq_len(nrow(fgseaRes)), function(i) {
+    pw <- fgseaRes$pathway[i]
+    genes <- pathways[[pw]]
+    gene_hits <- which(names(stats) %in% genes)
+    stat_vals <- stats[gene_hits]
+    tick_len <- abs(stat_vals) / max(abs(stats))
+
+    pos_idx <- which(stat_vals > 0)
+    df_pos <- if (length(pos_idx) > 0) {
+      data.frame(x = gene_hits[pos_idx], y = 0, yend = tick_len[pos_idx], col = col_pos)
+    } else NULL
+
+    neg_idx <- which(stat_vals < 0)
+    df_neg <- if (length(neg_idx) > 0) {
+      data.frame(x = gene_hits[neg_idx], y = 0, yend = -tick_len[neg_idx], col = col_neg)
+    } else NULL
+
+    hit_df <- rbind(df_pos, df_neg)
+    
+    n_ranks <- length(stats)
+    breaks <- pretty(1:n_ranks, n = 5)
+    labels <- format(breaks, big.mark = ",")
+
+    tick_plot <- ggplot(hit_df) +
+      geom_segment(aes(x = x, xend = x, y = y, yend = yend, color = col),
+                   size = tick_width) +
+      scale_color_identity() +
+      scale_x_continuous(
+    limits = c(1, length(stats)),     # <- COMMON X-AXIS SCALE
+    expand = c(0,0),
+    breaks = breaks,
+    labels = labels) +
+      scale_y_continuous(limits = c(-1,1), expand = c(0,0)) +
+      theme_classic(base_size = 11) +
+      theme(
+        axis.title.y = element_blank(),
+        axis.title.x = element_text(size = 8, face = "bold", margin = margin(t = 2)),
+        axis.text.x = element_text(size = 8, color = "black", margin = margin(t = 0)),
+        axis.line.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.margin = margin(0,2,2,2),
+        plot.background = element_blank(),
+        plot.title = element_text(size = 10, hjust = 0.5)
+      ) +
+      labs(x = "Rank") +
+      ggtitle(pw)
+
+    stat_table <- tableGrob(
+      data.frame(NES = round(fgseaRes$NES[i],2), padj = signif(fgseaRes$padj[i],3)),
+      rows = NULL,
+      theme = ttheme_default(
+        core = list(fg_params = list(cex = 0.8), bg_params = list(fill = "white", col = NA)),
+        colhead = list(fg_params = list(cex = 0.8), bg_params = list(fill = "white", col = NA))
+      )
+    )
+
+    combined <- arrangeGrob(tick_plot, stat_table, ncol = 2, widths = c(4,1))
+    combined
+  })
+
+  # Interleave spacers between pathway plots
+  interleaved <- list()
+  for(i in seq_along(plots)) {
+    interleaved <- c(interleaved, list(plots[[i]]))
+    if(i < length(plots)) {
+      interleaved <- c(interleaved, list(rectGrob(gp=gpar(col=NA, fill=NA), height=unit(spacer_height,"in"))))
+    }
+  }
+
+  grid.arrange(grobs = interleaved, ncol = 1, heights = rep(panel_height, length(interleaved)))
+}
+
+```
+
+### Function to save multiple GSEA plots in one pdf + list of intersting paths 
+```{r}
+
+int.RIBOpaths_Sig_GF.only<-list(
+GOCC_PRERIBOSOME= RIBOpaths_Sig_GF.only$GOCC_PRERIBOSOME,
+GOBP_RIBOSOMAL_SMALL_SUBUNIT_BIOGENESIS=RIBOpaths_Sig_GF.only$GOBP_RIBOSOMAL_SMALL_SUBUNIT_BIOGENESIS,
+GOCC_90S_PRERIBOSOME=RIBOpaths_Sig_GF.only$GOCC_90S_PRERIBOSOME,
+GOBP_RIBOSOMAL_LARGE_SUBUNIT_BIOGENESIS=RIBOpaths_Sig_GF.only$GOBP_RIBOSOMAL_LARGE_SUBUNIT_BIOGENESIS,
+GOCC_PRERIBOSOME_LARGE_SUBUNIT_PRECURSOR=RIBOpaths_Sig_GF.only$GOCC_PRERIBOSOME_LARGE_SUBUNIT_PRECURSOR)
+
+int.rRNApaths_Sig_GF.only<-list(
+REACTOME_RRNA_MODIFICATION_IN_THE_NUCLEUS_AND_CYTOSOL=rRNA_Sig_GF.only$REACTOME_RRNA_MODIFICATION_IN_THE_NUCLEUS_AND_CYTOSOL, 
+GOBP_MATURATION_OF_SSU_RRNA= rRNA_Sig_GF.only$GOBP_MATURATION_OF_SSU_RRNA, GOBP_MATURATION_OF_5_8S_RRNA=rRNA_Sig_GF.only$GOBP_MATURATION_OF_5_8S_RRNA, GOBP_RRNA_MODIFICATION=rRNA_Sig_GF.only$GOBP_RRNA_MODIFICATION,
+REACTOME_RRNA_PROCESSING=rRNA_Sig_GF.only$REACTOME_RRNA_PROCESSING)
+
+int.Cellcyclepaths_Sig_GF.only<-list(
+FISCHER_G1_S_CELL_CYCLE=Cellcyclepaths_Sig_GF.only$FISCHER_G1_S_CELL_CYCLE, WHITFIELD_CELL_CYCLE_G1_S=Cellcyclepaths_Sig_GF.only$WHITFIELD_CELL_CYCLE_G1_S,
+GOBP_CELL_CYCLE_CHECKPOINT_SIGNALING=Cellcyclepaths_Sig_GF.only$GOBP_CELL_CYCLE_CHECKPOINT_SIGNALING,
+GOBP_CELL_CYCLE_DNA_REPLICATION=Cellcyclepaths_Sig_GF.only$GOBP_CELL_CYCLE_DNA_REPLICATION)
+
+int.int.ASTRO_Sig_GF<-list(LEIN_ASTROCYTE_MARKERS=ASTRO_Sig_GF.only$LEIN_ASTROCYTE_MARKERS, GOBP_ASTROCYTE_DEVELOPMENT=ASTRO_Sig_GF.only$GOBP_ASTROCYTE_DEVELOPMENT)
+
+int.int.APO_NOTSig_GF<-list(REACTOME_APOPTOSIS=APOP_NotSig_GF.only$REACTOME_APOPTOSIS,KEGG_APOPTOSIS=APOP_NotSig_GF$KEGG_APOPTOSIS)
+
+
+int.int.UPR_NOTSig_GF<-list(GOBP_CELLULAR_RESPONSE_TO_UNFOLDED_PROTEIN=UNFOLDED_NOTSig_GF.only$GOBP_CELLULAR_RESPONSE_TO_UNFOLDED_PROTEIN)
+
+
+pathway_sets <- list(
+    Ribosome = int.RIBOpaths_Sig_GF,
+    rRNA = int.rRNApaths_Sig_GF,
+    CellCycle = int.Cellcyclepaths_Sig_GF,
+    Apoptosis = int.int.APO_NOTSig_GF,
+    Unfolded = int.int.UPR_NOTSig_GF,
+    Astrocyte = int.int.ASTRO_Sig_GF
+    )
+
+plot_multiple_GSEAsets <- function(pathway_list_named,
+                                   stats,
+                                   fgseaRes,
+                                   output_file,
+                                   tick_width = 0.6,
+                                   panel_height = 6,
+                                   width = 6,
+                                   height_per_plot = 6
+                                   ) {
+  
+  all_plots <- list()
+  
+  for (set_name in names(pathway_list_named)) {
+    
+    p <- plotGseaTable_colored_mirror_with_stats(
+      pathways = pathway_list_named[[set_name]],
+      stats = stats,
+      fgseaRes = fgseaRes,
+      tick_width = tick_width,
+      panel_height = panel_height
+    )
+    
+    # enforce equal height
+    p_fixed <- arrangeGrob(p, heights = unit(1, "null"))
+    
+    # consistent title for each set
+    title_grob <- textGrob(
+      paste("Pathway Set:", set_name),
+      gp = gpar(fontsize = 16, fontface = "bold")
+    )
+    
+    # Combine title and fixed-size plot into one unit
+    combined <- arrangeGrob(title_grob, p_fixed, ncol = 1, heights = c(0.1, 0.9))
+    
+    all_plots <- c(all_plots, list(combined))
+  }
+  
+  # Save all plots into one PDF, with same panel size
+  pdf(file = file.path(FigDIR_GF, "GSEA_NotSig_GF_Comb.Tickplot_corr_space_seed8501_UF.GF.only.pdf"),
+      width = width,
+      height = height_per_plot * length(all_plots))
+  
+  grid.arrange(grobs = all_plots,
+               ncol = 1,
+               heights = rep(unit(1, "null"), length(all_plots)))  # <- uniform height
+  
+  dev.off()
+  
+}
+
+
+
+plot_multiple_GSEAsets(
+  pathway_list_named = pathway_sets,
+  stats = ranksGF.jit,
+  fgseaRes = fgsea_C2C5H_GF,
+  output_file = file.path(FigDIR_TP3, "GSEA_Sig_and_NotSig_GF_Comb.Tickplot_corr_space_Seed8501_UF.GF.ONLY.pdf"),
+  tick_width = 0.6,
+  panel_height = 6,
+  width = 7,
+  height_per_plot = 30
+)
+
+```
